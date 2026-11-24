@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PENGUIN FLAP — a tiny flappy game built from one prompt</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin: 0; padding: 0; background: #070b24; overflow: hidden; height: 100%; }
+  canvas { display: block; margin: 0 auto; background: #070b24; }
+</style>
+</head>
+<body>
+<canvas id="game" width="1080" height="1920"></canvas>
+<script>
+'use strict';
+// PENGUIN FLAP — built from one prompt:
+// "a chubby penguin with a red scarf flaps through glowing ice-pipe gaps
+//  in a neon aurora sky — tap or Space to flap, each gap passed scores a
+//  point, pipes speed up as you score, game over on hitting a pipe or the
+//  ground, restart with one tap."
+const cv = document.getElementById('game');
+const ctx = cv.getContext('2d');
+const W = 1080, H = 1920;
+const GROUND_H = 150;
+const GROUND_Y = H - GROUND_H;
+const BIRD_X = 300;
+const BIRD_R = 46;
+const GRAVITY = 0.85;
+const FLAP_V = -14.5;
+const PIPE_W = 150;
+const GAP_START = 430;
+const PIPE_SPACING = 560;
+
+const state = {
+  mode: 'title',        // title | playing | over
+  birdY: H * 0.42, birdV: 0, wing: 0, tilt: 0,
+  pipes: [], spawnT: 0, speed: 5.2,
+  score: 0, best: 0, flash: 0, t: 0,
+  trail: [],           // pink feather sparkles behind the penguin
+  stars: [], snow: [], auroraPhase: 0,
+};
+for (let i = 0; i < 90; i++) state.stars.push({ x: Math.random() * W, y: Math.random() * 1150, r: Math.random() * 2.2 + 0.6, tw: Math.random() * 6.28 });
+for (let i = 0; i < 60; i++) state.snow.push({ x: Math.random() * W, y: Math.random() * H, r: Math.random() * 3 + 1, s: Math.random() * 1.2 + 0.4, drift: Math.random() * 0.8 - 0.4 });
+
+function gapFor(score) { return Math.max(330, GAP_START - score * 4); }
+function speedFor(score) { return Math.min(11.5, 5.2 + score * 0.22); }
+
+function resetGame() {
+  state.mode = 'playing';
+  state.birdY = H * 0.42; state.birdV = 0; state.tilt = 0;
+  state.pipes = []; state.spawnT = 0;
+  state.score = 0; state.flash = 0; state.trail = [];
+  spawnPipe(W + 200);
+}
+function spawnPipe(x) {
+  const gap = gapFor(state.score);
+  const margin = 220;
+  const gapY = margin + Math.random() * (GROUND_Y - margin * 2 - gap) + gap / 2;
+  state.pipes.push({ x, gapY, gap, passed: false });
+}
+function flap() {
+  if (state.mode === 'title') { resetGame(); state.birdV = FLAP_V; return; }
+  if (state.mode === 'over') { resetGame(); state.birdV = FLAP_V; return; }
+  state.birdV = FLAP_V;
+  state.wing = 1;
+}
+function gameOver() {
+  state.mode = 'over';
+  state.flash = 14;
+  state.best = Math.max(state.best, state.score);
+  try { localStorage.setItem('penguin-flap-best', String(state.best)); } catch (e) {}
+}
+try { state.best = parseInt(localStorage.getItem('penguin-flap-best') || '0', 10) || 0; } catch (e) {}
+
+function update() {
+  state.t++;
+  state.auroraPhase += 0.004;
+  for (const s of state.stars) s.tw += 0.05;
+  for (const f of state.snow) { f.y += f.s; f.x += f.drift + Math.sin(state.t * 0.01 + f.y * 0.01) * 0.3; if (f.y > H) { f.y = -5; f.x = Math.random() * W; } }
+  if (state.flash > 0) state.flash--;
+
+  if (state.mode === 'playing') {
+    state.birdV += GRAVITY;
+    if (state.birdV > 20) state.birdV = 20;
+    state.birdY += state.birdV;
+    state.tilt = Math.max(-0.45, Math.min(1.25, state.birdV * 0.06));
+    if (state.wing > 0) state.wing -= 0.06;
+    // feather trail
+    if (state.t % 4 === 0) state.trail.push({ x: BIRD_X - 40, y: state.birdY + 20, r: 5 + Math.random() * 4, a: 0.8 });
+    for (const p of state.trail) { p.x -= 3; p.a -= 0.03; }
+    state.trail = state.trail.filter((p) => p.a > 0);
+
+    state.speed = speedFor(state.score);
+    for (const p of state.pipes) p.x -= state.speed;
+    state.spawnT += state.speed;
+    if (state.spawnT >= PIPE_SPACING) { state.spawnT = 0; spawnPipe(W + 100); }
+    if (state.pipes.length && state.pipes[0].x < -PIPE_W - 20) state.pipes.shift();
+
+    for (const p of state.pipes) {
+      if (!p.passed && p.x + PIPE_W < BIRD_X - BIRD_R) { p.passed = true; state.score++; }
+      // collision: circle vs the two pipe rects
+      const topH = p.gapY - p.gap / 2, botY = p.gapY + p.gap / 2;
+      const cx = Math.max(p.x, Math.min(BIRD_X, p.x + PIPE_W));
+      const topCy = Math.max(0, Math.min(state.birdY, topH));
+      const botCy = Math.max(botY, Math.min(state.birdY, GROUND_Y));
+      const dTop = Math.hypot(BIRD_X - cx, state.birdY - topCy);
+      const dBot = Math.hypot(BIRD_X - cx, state.birdY - botCy);
+      if (dTop < BIRD_R - 4 || dBot < BIRD_R - 4) { gameOver(); return; }
+    }
+    if (state.birdY + BIRD_R >= GROUND_Y) { state.birdY = GROUND_Y - BIRD_R; gameOver(); return; }
+    if (state.birdY < -80) { state.birdY = -80; state.birdV = 0; }
+  } else if (state.mode === 'title') {
+    state.birdY = 990 + Math.sin(state.t * 0.05) * 18;
+    state.tilt = Math.sin(state.t * 0.05 + 0.6) * 0.12;
+    state.wing = 0.4 + Math.sin(state.t * 0.12) * 0.3;
+  }
+}
+
+// ---------- drawing ----------
+function drawSky() {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#0a1030');
+  g.addColorStop(0.45, '#14215e');
+  g.addColorStop(0.75, '#3b2a6e');
+  g.addColorStop(1, '#0a1030');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  // moon
+  ctx.save();
+  ctx.shadowColor = '#ffe9a8'; ctx.shadowBlur = 90;
+  ctx.fillStyle = '#fff3c4';
+  ctx.beginPath(); ctx.arc(860, 240, 78, 0, 6.2832); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = 'rgba(214,178,110,0.55)';
+  ctx.beginPath(); ctx.arc(835, 215, 16, 0, 6.2832); ctx.fill();
+  ctx.beginPath(); ctx.arc(885, 265, 11, 0, 6.2832); ctx.fill();
+  ctx.beginPath(); ctx.arc(870, 205, 8, 0, 6.2832); ctx.fill();
+  ctx.restore();
+  // stars
+  for (const s of state.stars) {
+    ctx.globalAlpha = 0.35 + 0.65 * Math.abs(Math.sin(s.tw));
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, 6.2832); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  // aurora bands
+  const bands = [
+    { base: 300, amp: 90, hue: 'rgba(64,224,150,0.30)', w: 150 },
+    { base: 430, amp: 120, hue: 'rgba(255,105,180,0.22)', w: 190 },
+    { base: 560, amp: 80, hue: 'rgba(120,200,255,0.20)', w: 130 },
+  ];
+  for (const b of bands) {
+    ctx.beginPath();
+    ctx.moveTo(0, b.base);
+    for (let x = 0; x <= W; x += 18) {
+      ctx.lineTo(x, b.base + Math.sin(x * 0.004 + state.auroraPhase * 3 + b.base) * b.amp + Math.sin(x * 0.011 - state.auroraPhase * 2) * 30);
+    }
+    for (let x = W; x >= 0; x -= 18) {
+      ctx.lineTo(x, b.base + b.w + Math.sin(x * 0.004 + state.auroraPhase * 3 + b.base) * b.amp + Math.sin(x * 0.011 - state.auroraPhase * 2) * 30);
+    }
+    ctx.closePath();
+    ctx.fillStyle = b.hue;
+    ctx.fill();
+  }
+}
+function drawPipe(p) {
+  const topH = p.gapY - p.gap / 2, botY = p.gapY + p.gap / 2;
+  const drawOne = (x, y, w, h, isTop) => {
+    const g = ctx.createLinearGradient(x, y, x + w, y);
+    g.addColorStop(0, '#7fd8ff');
+    g.addColorStop(0.25, '#c9f2ff');
+    g.addColorStop(0.55, '#5fb8e8');
+    g.addColorStop(1, '#2a7fc0');
+    ctx.save();
+    ctx.shadowColor = 'rgba(127,216,255,0.9)'; ctx.shadowBlur = 34;
+    ctx.fillStyle = g;
+    roundRect(x, y, w, h, 14); ctx.fill();
+    ctx.restore();
+    // ice rim light + highlight stripe
+    ctx.fillStyle = 'rgba(255,255,255,0.75)';
+    ctx.fillRect(x + 14, y + 6, 16, h - 12);
+    ctx.fillStyle = 'rgba(255,105,180,0.55)';
+    ctx.fillRect(x + w - 10, y + 6, 5, h - 12);
+    // icicle teeth on the gap edge
+    ctx.fillStyle = '#dff7ff';
+    const teeth = 5;
+    for (let i = 0; i < teeth; i++) {
+      const tx = x + 12 + (i * (w - 24)) / (teeth - 1);
+      const len = 26 + ((i * 37) % 30);
+      ctx.beginPath();
+      if (isTop) { ctx.moveTo(tx - 13, y + h); ctx.lineTo(tx + 13, y + h); ctx.lineTo(tx, y + h + len); }
+      else { ctx.moveTo(tx - 13, y); ctx.lineTo(tx + 13, y); ctx.lineTo(tx, y - len); }
+      ctx.closePath(); ctx.fill();
+    }
+    // cap lip
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    if (isTop) ctx.fillRect(x - 8, y + h - 22, w + 16, 22);
+    else ctx.fillRect(x - 8, y, w + 16, 22);
+  };
+  drawOne(p.x, 0, PIPE_W, topH, true);
+  drawOne(p.x, botY, PIPE_W, GROUND_Y - botY, false);
+  // gap glow ring
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,214,120,0.85)'; ctx.lineWidth = 4;
+  ctx.setLineDash([18, 14]);
+  ctx.beginPath(); ctx.moveTo(p.x - 6, p.gapY - p.gap / 2); ctx.lineTo(p.x - 6, p.gapY + p.gap / 2); ctx.stroke();
+  ctx.restore();
+}
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.arcTo(x + w, y, x + w, y + r, r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+  ctx.lineTo(x + r, y + h);
+  ctx.arcTo(x, y + h, x, y + h - r, r);
+  ctx.lineTo(x, y + r);
+  ctx.arcTo(x, y, x + r, y, r);
+  ctx.closePath();
+}
+function drawGround() {
+  // snow drift ground with pink rim light
+  const g = ctx.createLinearGradient(0, GROUND_Y, 0, H);
+  g.addColorStop(0, '#eaf6ff');
+  g.addColorStop(0.25, '#cfe9fb');
+  g.addColorStop(1, '#8fb8dd');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.moveTo(0, GROUND_Y + 18);
+  for (let x = 0; x <= W; x += 40) ctx.lineTo(x, GROUND_Y + 14 + Math.sin(x * 0.01 + 1.2) * 10);
+  ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = 'rgba(255,105,180,0.7)';
+  ctx.fillRect(0, GROUND_Y, W, 8);
+  // snow sparkles
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  for (let i = 0; i < 26; i++) {
+    const sx = ((i * 173) % W), sy = GROUND_Y + 30 + ((i * 97) % (GROUND_H - 40));
+    ctx.beginPath(); ctx.arc(sx, sy, 3, 0, 6.2832); ctx.fill();
+  }
+}
+function drawPenguin() {
+  const x = BIRD_X, y = state.birdY;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(state.tilt);
+  // feather trail sparkles (drawn behind, in world space)
+  ctx.restore();
+  for (const p of state.trail) {
+    ctx.globalAlpha = p.a;
+    ctx.fillStyle = '#ffb3d9';
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 6.2832); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(state.tilt);
+  ctx.shadowColor = 'rgba(0,0,0,0.35)'; ctx.shadowBlur = 18; ctx.shadowOffsetY = 10;
+  // tail
+  ctx.fillStyle = '#1d2f52';
+  ctx.beginPath(); ctx.moveTo(-34, 18); ctx.lineTo(-62, 34); ctx.lineTo(-36, 38); ctx.closePath(); ctx.fill();
+  // body — chubby, dark blue-grey back
+  const bg = ctx.createRadialGradient(-8, -14, 8, 0, 0, 62);
+  bg.addColorStop(0, '#33456e'); bg.addColorStop(1, '#16233f');
+  ctx.fillStyle = bg;
+  ctx.beginPath(); ctx.ellipse(0, 0, 46, 54, 0, 0, 6.2832); ctx.fill();
+  ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+  // white belly
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath(); ctx.ellipse(6, 14, 30, 36, 0, 0, 6.2832); ctx.fill();
+  // wing (flaps with wing phase)
+  const flapA = -0.5 - state.wing * 0.9;
+  ctx.save();
+  ctx.translate(-18, 2); ctx.rotate(flapA);
+  ctx.fillStyle = '#24365e';
+  ctx.beginPath(); ctx.ellipse(-14, 0, 26, 13, 0, 0, 6.2832); ctx.fill();
+  ctx.fillStyle = '#3b548a';
+  ctx.beginPath(); ctx.ellipse(-14, -3, 22, 9, 0, 0, 6.2832); ctx.fill();
+  ctx.restore();
+  // eye
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath(); ctx.arc(20, -22, 13, 0, 6.2832); ctx.fill();
+  ctx.fillStyle = '#111827';
+  ctx.beginPath(); ctx.arc(24, -22, 6.5, 0, 6.2832); ctx.fill();
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath(); ctx.arc(26, -25, 2.5, 0, 6.2832); ctx.fill();
+  // blush
+  ctx.fillStyle = 'rgba(255,105,180,0.55)';
+  ctx.beginPath(); ctx.arc(30, -6, 8, 0, 6.2832); ctx.fill();
+  // orange beak
+  ctx.fillStyle = '#ff9f1c';
+  ctx.beginPath(); ctx.moveTo(38, -12); ctx.lineTo(62, -4); ctx.lineTo(38, 2); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#ff7b00';
+  ctx.beginPath(); ctx.moveTo(38, -4); ctx.lineTo(58, -4); ctx.lineTo(38, 4); ctx.closePath(); ctx.fill();
+  // red scarf — knot + flowing tail
+  ctx.fillStyle = '#e63946';
+  ctx.beginPath(); ctx.ellipse(-2, 26, 34, 12, 0.15, 0, 6.2832); ctx.fill();
+  ctx.fillStyle = '#c1121f';
+  ctx.beginPath(); ctx.ellipse(-2, 30, 34, 7, 0.15, 0, 6.2832); ctx.fill();
+  const wave = Math.sin(state.t * 0.15) * 8;
+  ctx.fillStyle = '#e63946';
+  ctx.beginPath();
+  ctx.moveTo(-30, 28);
+  ctx.quadraticCurveTo(-58, 30 + wave, -78, 18 + wave);
+  ctx.quadraticCurveTo(-60, 44 + wave, -30, 40);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#ff5d6c';
+  ctx.fillRect(-72, 20 + wave, 6, 14);
+  // feet
+  ctx.fillStyle = '#ff9f1c';
+  ctx.beginPath(); ctx.ellipse(-12, 52, 14, 6, 0, 0, 6.2832); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(14, 52, 14, 6, 0, 0, 6.2832); ctx.fill();
+  ctx.restore();
+}
+function drawHUD() {
+  ctx.textAlign = 'center';
+  // big score
+  ctx.font = '900 150px "Arial Black", Arial, sans-serif';
+  ctx.lineWidth = 12; ctx.strokeStyle = 'rgba(10,16,48,0.85)';
+  ctx.strokeText(String(state.score), W / 2, 240);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(String(state.score), W / 2, 240);
+  ctx.font = '700 34px Arial, sans-serif';
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.fillText('BEST ' + state.best, W / 2, 300);
+}
+function drawTitle() {
+  ctx.fillStyle = 'rgba(7,11,36,0.45)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.font = '900 118px "Arial Black", Arial, sans-serif';
+  ctx.lineWidth = 14; ctx.strokeStyle = 'rgba(10,16,48,0.9)';
+  ctx.strokeText('PENGUIN', W / 2, 560);
+  ctx.fillStyle = '#8be9ff';
+  ctx.fillText('PENGUIN', W / 2, 560);
+  ctx.strokeText('FLAP', W / 2, 690);
+  ctx.fillStyle = '#ff6fb1';
+  ctx.fillText('FLAP', W / 2, 690);
+  ctx.font = '700 44px Arial, sans-serif';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText('tap or press SPACE to flap', W / 2, 800);
+  ctx.fillStyle = '#ffe9a8';
+  ctx.fillText('through the ice pipes — don\'t bonk!', W / 2, 860);
+  const pulse = 0.6 + 0.4 * Math.sin(state.t * 0.08);
+  ctx.globalAlpha = pulse;
+  ctx.font = '900 52px "Arial Black", Arial, sans-serif';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText('▶ TAP TO START', W / 2, 1160);
+  ctx.globalAlpha = 1;
+  ctx.font = '700 36px Arial, sans-serif';
+  ctx.fillStyle = 'rgba(255,255,255,0.75)';
+  ctx.fillText('one prompt · one penguin · zero mercy', W / 2, 1260);
+}
+function drawOver() {
+  ctx.fillStyle = 'rgba(7,11,36,0.55)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.font = '900 110px "Arial Black", Arial, sans-serif';
+  ctx.lineWidth = 14; ctx.strokeStyle = 'rgba(10,16,48,0.9)';
+  ctx.strokeText('GAME OVER', W / 2, 620);
+  ctx.fillStyle = '#ff6fb1';
+  ctx.fillText('GAME OVER', W / 2, 620);
+  ctx.font = '900 190px "Arial Black", Arial, sans-serif';
+  ctx.strokeText(String(state.score), W / 2, 880);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(String(state.score), W / 2, 880);
+  ctx.font = '700 44px Arial, sans-serif';
+  ctx.fillStyle = '#ffe9a8';
+  const bestLine = state.score >= state.best && state.score > 0 ? 'NEW BEST!' : 'BEST ' + state.best;
+  ctx.fillText(bestLine, W / 2, 960);
+  const pulse = 0.6 + 0.4 * Math.sin(state.t * 0.08);
+  ctx.globalAlpha = pulse;
+  ctx.font = '900 52px "Arial Black", Arial, sans-serif';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText('↻ TAP TO FLY AGAIN', W / 2, 1120);
+  ctx.globalAlpha = 1;
+}
+function draw() {
+  drawSky();
+  for (const p of state.pipes) drawPipe(p);
+  drawGround();
+  // snowfall over everything
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  for (const f of state.snow) { ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, 6.2832); ctx.fill(); }
+  drawPenguin();
+  if (state.mode === 'playing') drawHUD();
+  if (state.mode === 'title') drawTitle();
+  if (state.mode === 'over') drawOver();
+  if (state.flash > 0) {
+    ctx.fillStyle = 'rgba(255,255,255,' + (state.flash / 14 * 0.7) + ')';
+    ctx.fillRect(0, 0, W, H);
+  }
+}
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'Enter') { e.preventDefault(); flap(); }
+});
+cv.addEventListener('pointerdown', (e) => { e.preventDefault(); flap(); });
+// debug / automation handle (auto-player + play-test read this)
+window.__game = {
+  get state() { return state.mode; },
+  get score() { return state.score; },
+  get best() { return state.best; },
+  get birdY() { return state.birdY; },
+  get birdV() { return state.birdV; },
+  get pipes() { return state.pipes.map((p) => ({ x: p.x, gapY: p.gapY, gap: p.gap, passed: p.passed })); },
+  get groundY() { return GROUND_Y; },
+  flap,
+};
+loop();
+</script>
+</body>
+</html>
